@@ -10,22 +10,22 @@ void forward_kernel(const float* Q, const float* K, const float* V, const int N,
     int bx = blockIdx.x; int by = blockIdx.y;  // batch and head index
 
     // Offset into Q,K,V,O,l,m - different for each batch and head
-    int qkv_offset = (bx * gridDim.y * N * d) + (by * N * d);  // gridDim.y = nh
-    int lm_offset = (bx * gridDim.y * N) + (by * N);  // offset for l and m
+    int qkv_offset = (bx * gridDim.y + by)  * N * d;  // gridDim.x gridDim.y组成了batch和head_dim两个维度
+    int lm_offset = (bx * gridDim.y + by) * N;  // offset for l and m
 
     // Define SRAM for Q,K,V,S
     extern __shared__ float sram[];
     int tile_size = Bc * d;  // size of Qi, Kj, Vj
     float* Qi = sram;
     float* Kj = &sram[tile_size];
-    float* Vj = &sram[tile_size * 2];
-    float* S = &sram[tile_size * 3];
+    float* Vj = &sram[tile_size + Br * d];
+    float* S = &sram[tile_size + Br * d * 2];
 
     for (int j = 0; j < Tc; j++) {
 
         // Load Kj, Vj to SRAM
         for (int x = 0; x < d; x++) {
-            Kj[(tx * d) + x] = K[qkv_offset + (tile_size * j) + (tx * d) + x];
+            Kj[(tx * d) + x] = K[qkv_offset + (tile_size * j) + (tx * d) + x]; // 没有用float4类型去取数据
             Vj[(tx * d) + x] = V[qkv_offset + (tile_size * j) + (tx * d) + x];
         }
         __syncthreads();  // such that the inner loop can use the correct Kj, Vj
@@ -88,7 +88,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
     const int B = Q.size(0); const int nh = Q.size(1);
     const int N = Q.size(2); const int d = Q.size(3);
 
-    const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br); hello
+    const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br); // Tr: 纵向循环次数，Tc：横向循环次数
     const float softmax_scale = 1.0 / sqrt(d);
 
     // Initialize O, l, m to HBM
@@ -99,13 +99,13 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
     l = l.to(device); m = m.to(device);
 
     // Calculate SRAM size needed per block
-    const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));
+    const int sram_size = (3 * Bc * d * sizeof(float)) + (Bc * Br * sizeof(float));  // Br * d: Q_block, Bc * d: K_block, V_block   Br * Bc: S(一开始我以为是O，这样看来O每次是从global中取).这里因为Br=Bc所以也没有算错
     int max_sram_size;
     cudaDeviceGetAttribute(&max_sram_size, cudaDevAttrMaxSharedMemoryPerBlock, 0);
     printf("Max shared memory: %d, requested shared memory: %d \\n", max_sram_size, sram_size);
 
     dim3 grid_dim(B, nh);  // batch_size x num_heads
-    dim3 block_dim(Bc);  // Bc threads per block
+    dim3 block_dim(Bc);  // Bc threads per block // TODO:这个线程数是怎么确定的
 
     forward_kernel<<<grid_dim, block_dim, sram_size>>>(
         Q.data_ptr<float>(), K.data_ptr<float>(), V.data_ptr<float>(),

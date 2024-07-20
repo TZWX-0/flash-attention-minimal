@@ -88,7 +88,7 @@ torch::Tensor forward(torch::Tensor Q, torch::Tensor K, torch::Tensor V) {
     const int B = Q.size(0); const int nh = Q.size(1);
     const int N = Q.size(2); const int d = Q.size(3);
 
-    const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br);
+    const int Tc = ceil((float) N / Bc); const int Tr = ceil((float) N / Br); hello
     const float softmax_scale = 1.0 / sqrt(d);
 
     // Initialize O, l, m to HBM
